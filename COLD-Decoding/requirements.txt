@@ -1,6 +1,0 @@
-nltk
-torch==2.2.0
-tqdm 
-wandb
-transformers==4.2.1
-
