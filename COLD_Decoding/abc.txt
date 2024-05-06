@@ -1,0 +1,33 @@
+Concept Set: field#look#stand
+BLEU Scores: 2.7846673486690436
+CHRF Scores: 19.965950313847642
+TER Scores: 180.546875
+=============================================
+Concept Set: dance#kid#room
+BLEU Scores: 2.3683821708029456
+CHRF Scores: 13.840897233698792
+TER Scores: 197.48263888888889
+=============================================
+Concept Set: cat#couch#pet
+BLEU Scores: 2.331446340798231
+CHRF Scores: 13.39108325846872
+TER Scores: 215.7986111111111
+=============================================
+Concept Set: building#climb#side
+BLEU Scores: 3.859126803891013
+CHRF Scores: 24.376171359757414
+TER Scores: 233.0078125
+=============================================
+Concept Set: climb#talk#wall
+BLEU Scores: 2.5481552598686723
+CHRF Scores: 14.486336429952466
+TER Scores: 160.09114583333331
+=============================================
+Concept Set: car#drive#snow
+BLEU Scores: 2.63128166005905
+CHRF Scores: 15.600316505099478
+TER Scores: 320.44270833333337
+=============================================
+Overall Results
+BLEU Score: 2.753843264014826
+CHRF Score: 16.94345918347075
