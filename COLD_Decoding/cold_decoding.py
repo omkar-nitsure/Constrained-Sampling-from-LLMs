@@ -22,6 +22,7 @@ from nltk.tokenize import word_tokenize
 
 from util import *
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
+from transformers import GPT2LMHeadModel, AutoTokenizer
 from bleuloss import batch_log_bleulosscnn_ae
 from modeling_opengpt2 import OpenGPT2LMHeadModel
 
@@ -40,7 +41,6 @@ def options():
     parser.add_argument("--straight-through", action="store_true")
     parser.add_argument("--topk", type=int, default=0)
     parser.add_argument("--beam-search", type=int, default=0)
-    parser.add_argument("--topk-v2", type=int, default=0)
     parser.add_argument("--rl-topk", type=int, default=0)
     parser.add_argument("--lexical", type=str, default='max', choices=['max', 'ppl_max', 'all', 'bleu'])
     parser.add_argument("--lexical-variants", action="store_true", help="")
@@ -59,7 +59,7 @@ def options():
     parser.add_argument("--repeat-batch", type=int, default=1, help="loading data util ith examples.")
     parser.add_argument("--mode", type=str, default='constrained_langevin',
                         choices=['lexical_generation', 'counterfactual_langevin', 'abductive_langevin',
-                                  'grammar'])
+                                  'grammar', 'sentiment'])
     ## model
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--length", type=int, default=15, help="maximum length of optimized logits.")
@@ -67,10 +67,16 @@ def options():
     parser.add_argument("--frozen-length", type=int, default=0, help="length of optimization window in sequence.")
     parser.add_argument("--constraint-weight", type=float, default=0.1)
     parser.add_argument("--abductive-c2-weight", type=float, default=0.05)
+    parser.add_argument("--counterfactual-c2-weight", type=float, default=0.05)
+    parser.add_argument("--counterfactual-c1-weight", type=float, default=1)
+    parser.add_argument("--sentiment-c1-weight", type=float, default=1)
+    parser.add_argument("--sentiment-c2-weight", type=float, default=0.05)
+    parser.add_argument("--sentiment-c1-rev-weight", type=float, default=0.5)
     parser.add_argument("--abductive-filterx", action="store_true", help="filter out keywords included in x")
     parser.add_argument("--lr-nll-portion", type=float, default=1)
     parser.add_argument("--prefix-length", type=int, default=0, help="length of prefix.")
     parser.add_argument("--counterfactual-max-ngram", type=int, default=6)
+    parser.add_argument("--sentiment-max-ngram", type=int, default=4)
     parser.add_argument("--no-loss-rerank", action="store_true", help="")
     # temperature
     parser.add_argument("--input-lgt-temp", type=float, default=1,
@@ -102,17 +108,12 @@ def options():
     args = parser.parse_args()
     return args
 
-
-def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, model_back=None, zz=None):
+### EDIT: Adding x_counter to the decode function in order to improve the counterfactual reasoning task
+def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, model_back=None, zz=None, x_counter="", model_clf=None, tokenizer_clf=None):
     '''
     x: left context   (prompt in lexical lexical task)
     z: optimization target  (original ending in counterfactual task)
     constraints: (constraint set in lexical constrained task)
-    '''
-    '''
-    Sentiment Transfer task
-    x: original sentence in positive tone
-
     '''
 
     x_ = tokenizer.encode(x) # x_ is a list of token ids
@@ -122,6 +123,13 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
     # repeat batch_size times
     x_t = x_t.unsqueeze(0).repeat(args.batch_size, 1)
     x_onehot = x_onehot.repeat(args.batch_size, 1, 1)
+
+    if 'counterfactual' in args.mode and x_counter != "":
+        x_counter_ = tokenizer.encode(x_counter)
+        x_counter_t = torch.tensor(x_counter_, device=device, dtype=torch.long)
+        x_counter_onehot = one_hot(x_counter_t, dimension=tokenizer.vocab_size)
+        x_counter_t = x_counter_t.unsqueeze(0).repeat(args.batch_size, 1)
+        x_counter_onehot = x_counter_onehot.repeat(args.batch_size, 1, 1)
 
     z_mask = None
 
@@ -134,9 +142,15 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
 
         z_t = z_t.unsqueeze(0).repeat(args.batch_size, 1)
 
+        if x_counter != "":
+            z_counter = "<|endoftext|> "
+            z_counter_ = tokenizer.encode(z_counter)
+            z_counter_t = torch.tensor(z_counter_, device=device, dtype=torch.long)
+            z_counter_onehot = one_hot(z_counter_t, dimension=tokenizer.vocab_size)
+            z_counter_onehot = z_counter_onehot.repeat(args.batch_size, 1, 1)
+            z_counter_t = z_counter_t.unsqueeze(0).repeat(args.batch_size, 1)
+
         length = args.length
-        if length <= 0:
-            length = z_t.shape[1] - length
         if args.verbose:
             print("x:\t|%s|\nz:\t|%s|\nlength:\t%d\nconstraints:\t%s" % (
                 tokenizer.decode(x_), tokenizer.decode(z_), length, constraints))
@@ -168,8 +182,6 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
         zz_t = torch.tensor(zz_, device=device, dtype=torch.long)
         zz_t = zz_t.unsqueeze(0).repeat(args.batch_size, 1)
 
-        # Verify that the constraints we send actually breakdown into as many tokens as
-        # the number of words in the constraints
         z_mask = np.zeros([tokenizer.vocab_size])
         z_mask[zz_] = 1.
         z_mask = torch.tensor(z_mask, device=device)
@@ -179,9 +191,34 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
             print("x:\t|%s|\nz:\t|%s|\nzz:\t|%s|\nconstraints:\t%s" % (
                 tokenizer.decode(x_), tokenizer.decode(z_), tokenizer.decode(zz_), constraints))
 
+    if 'sentiment' in args.mode:
+        length = args.length 
+        z_ = tokenizer.encode(z)[1:]  # delete the "." token we appended before
+        z_t = torch.tensor(z_, device=device, dtype=torch.long)
+        z_onehot = one_hot(z_t, dimension=tokenizer.vocab_size)
+        z_t = z_t.unsqueeze(0).repeat(args.batch_size, 1)
+        z_onehot = z_onehot.repeat(args.batch_size, 1, 1)
+        length = args.length
+
+        if args.verbose:
+            print("x:\t|%s|\nz:\t|%s|\nlength:\t%d\nconstraints:\t%s" % (
+                tokenizer.decode(x_), tokenizer.decode(z_), length, constraints))
+            
+        z_words = word_tokenize(z[2:])
+        z_nonstop_words = [w.lower() for w in z_words if w.lower() not in stop_words and w.isalnum()]
+        z_nonstop_words += [z_words[0]]
+        z_nonstop_words = ' ' + ' '.join(z_nonstop_words)
+        z_nonstop_ = tokenizer.encode(z_nonstop_words)
+        print('|' + z_nonstop_words + '|')
+
+        z_mask = np.zeros([tokenizer.vocab_size])
+        z_mask[z_nonstop_] = 1.
+        z_mask = torch.tensor(z_mask, device=device)
+        z_mask = z_mask.unsqueeze(0).unsqueeze(0).repeat(args.batch_size, length, 1)
+
     model.eval()
 
-    if args.init_mode == 'random': # default setting is random
+    if args.init_mode == 'random':
         init_logits = initialize(model, x_t, length, args.init_temp, device)
     else:
         init_logits = z_onehot / 0.1
@@ -197,22 +234,25 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
 
     if args.wandb:
         wandb.init(
-            project='rl_0.4_ac2w_0.2',
-            # project='args.mode' + str(int(round(time.time() * 1000))),
+            project='Hyperparameter Tuning',
             config=args)
 
     assert args.prefix_length <= 0  # Otherwise not compatible with batch mode
 
+    # if args.prefix_length > 0:
+    #     prefix_logits = torch.nn.Parameter(
+    #         torch.rand(x_onehot.shape[0], args.prefix_length, x_onehot.shape[2], dtype=init_logits.dtype,
+    #                    device=device))
 
     y_logits = init_logits
     epsilon = torch.nn.Parameter(torch.zeros_like(y_logits))
-    if args.prefix_length > 0:
-        optim = torch.optim.Adam([epsilon, prefix_logits], lr=args.stepsize)
-    else:
-        optim = torch.optim.Adam([epsilon], lr=args.stepsize)
+    # if args.prefix_length > 0:
+    #     optim = torch.optim.Adam([epsilon, prefix_logits], lr=args.stepsize)
+    # else:
+    optim = torch.optim.Adam([epsilon], lr=args.stepsize)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer=optim, step_size=args.stepsize_iters,
                                                 gamma=args.stepsize_ratio)
-    # SCHEDULER -- Read Welling et al. 
+    # SCHEDULER -- Read Welling et al. -----------[OMKAR]
     frozen_len = args.frozen_length
 
     y_logits_ = None
@@ -221,25 +261,24 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
     ## Encode x beforehand
     assert args.prefix_length <= 0, "The current code does not support prefix-length > 0"
     soft_forward_x = x_onehot[:, -1:, :]  # The last token of x is used in soft_forward
-    if x_t.shape[1] == 1: # x_t is 2D
+    if x_t.shape[1] == 1:
         x_model_past = None
     else:
         x_model_outputs = model(x_t[:, :-1])
         x_model_past = x_model_outputs.past_key_values
-        dummy = []
-        for i in range(len(x_model_past)):
-            a = []
-            for j in range(len(x_model_past[i])):
-                a.append(x_model_past[i][j].detach())
-            dummy.append(tuple(a))
-        del x_model_past
-        x_model_past = tuple(dummy)
-        del dummy
-        # x_model_past = [_.detach().cpu().numpy() for _ in x_model_past]
+        x_model_past = [_.detach() for _ in x_model_past]
 
-    # For right to left model -- used only in counterfactual task
+    if 'counterfactual' in args.mode and x_counter != "":
+        soft_forward_x_counter = x_counter_onehot[:, -1:, :]
+        if x_counter_t.shape[1] == 1:
+            x_model_past_counter = None
+        else:
+            x_model_outputs_counter = model(x_counter_t[:, :-1])
+            x_model_past_counter = x_model_outputs_counter.past_key_values
+            x_model_past_counter = [_.detach() for _ in x_model_past_counter]
+
+    # For right to left model
     rl_reverse_index = torch.arange(y_logits.shape[1] - 1, -1, -1)
-
     mask_t = None
 
     for iter in range(args.num_iters):
@@ -254,6 +293,9 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
                 soft_forward_y = top_k_filter_3d(y_logits_, args.topk, mask=mask_t, extra_mask=z_mask) / 0.001
 
         y_logits_t = soft_forward(model, soft_forward_x, soft_forward_y, x_past=x_model_past)
+        # print(soft_forward_x.shape)
+        # print(soft_forward_y.shape)
+        # print(y_logits_t.shape)
 
         if args.topk == 0:
             mask_t = None
@@ -270,7 +312,7 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
             rl_nll_loss = lr_nll_loss
         else:
             # add right-to-left model (rl)
-            if "counterfactual" in args.mode:
+            if "counterfactual" in args.mode or "sentiment" in args.mode:
                 y_logits_rev = y_logits_[:, rl_reverse_index, :]
                 y_logits_rev_t = model_back(y_logits_rev.argmax(-1) + 1).logits[:, :-1, :]
                 y_logits_rev_t = y_logits_rev_t[:, :, 1:y_logits_.shape[-1] + 1]
@@ -296,13 +338,20 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
 
 
         if "counterfactual" in args.mode:
-            c_loss = batch_log_bleulosscnn_ae(
+            c_loss_2 = batch_log_bleulosscnn_ae(
                 decoder_outputs=top_k_filter_3d(y_logits_, args.topk, mask=mask_t, extra_mask=z_mask).transpose(0, 1),
                 target_idx=z_t,
                 ngram_list=list(range(2, args.counterfactual_max_ngram + 1))
             )
 
-        if "abductive" in args.mode or "lexical" in args.mode:
+            if x_counter != "":
+                # pred(x_counter; y) that is given x_counter, the model loss to predict y
+                output = model(x_counter_t)
+                
+                c_loss = -args.counterfactual_c1_weight*c_loss_1 + args.counterfactual_c2_weight * c_loss_2
+            else:
+                c_loss = c_loss_2        
+        elif "abductive" in args.mode or "lexical" in args.mode:
             soft_forward_y_ = (y_logits_.detach() / 0.3 - y_logits_).detach() + y_logits_
             xyz_logits, xy_length = soft_forward_xyz(model, soft_forward_x, soft_forward_y_, z_onehot)
 
@@ -325,10 +374,61 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
                 ngram_list=[1]
             )
             c_loss = c_loss_1 + args.abductive_c2_weight * c_loss_2
+        elif "sentiment" in args.mode:
+            c_loss_2 = batch_log_bleulosscnn_ae(
+                decoder_outputs=top_k_filter_3d(y_logits_, args.topk, mask=mask_t, extra_mask=z_mask).transpose(0, 1),
+                target_idx=z_t,
+                ngram_list=list(range(2, args.sentiment_max_ngram + 1))
+            )
+
+            if "modelling-1" in args.mode:
+            # pred(z; y)
+                soft_forward_y_ = (y_logits_.detach() / 0.3 - y_logits_).detach() + y_logits_
+                xyz_logits, xy_length = soft_forward_xyz(model, soft_forward_x, soft_forward_y_, z_onehot)
+                bz, lg, st, ed = args.batch_size, xyz_logits.shape[1], xy_length - 1, xyz_logits.shape[1] - 1
+                xyz_logits = xyz_logits.view(-1, xyz_logits.shape[-1])
+                z_logits = torch.cat([xyz_logits[bi * lg + st:bi * lg + ed, :] for bi in range(bz)], dim=0)
+                c_loss_1 = torch.nn.CrossEntropyLoss(reduction='none')(
+                    z_logits,
+                    z_t.view(-1))
+                # print(z_logits.shape, "z_logits")
+                # print(z_t.view(-1).shape, "z_t")
+                c_loss_1 = c_loss_1.view(args.batch_size, -1).mean(-1)
+
+                # pred(y;z) -- c_loss_1_rev is the cross entropy loss involved in predicting y given z
+                soft_forward_z_ = (z_onehot.detach() / 0.3 - z_onehot).detach() + z_onehot
+                y_logits_rev = soft_forward(model, soft_forward_z_, soft_forward_y_, x_past=x_model_past)
+                # print(y_logits_rev.shape, "y logits_rev")
+                # print(y_logits_.shape, "y logits_")
+                y_logits_rev = y_logits_rev.reshape(-1, y_logits_rev.shape[-1])
+                # print(y_logits_rev.shape, "y logits_rev after reshape")
+                y_logits_open = y_logits_.reshape(-1, y_logits_.shape[-1])
+                y_t_s = y_logits_open.argmax(-1)
+                # print(y_t_hehe.shape, "y_t_hehe")
+                c_loss_1_rev = torch.nn.CrossEntropyLoss(reduction='none')(
+                    y_logits_rev,
+                    y_t_s)
+                c_loss_1_rev = c_loss_1_rev.mean(-1)
+                
+                # final loss values
+                c_loss = - args.sentiment_c1_weight*c_loss_1 - args.sentiment_c1_rev_weight * c_loss_1_rev + args.sentiment_c2_weight * c_loss_2            
+  
+            elif "modelling-2" in args.mode:
+                # Use model_clf to predict the sentiment of the generated text
+                # This can be done by calculating the cross entropy loss between the predicted sentiment and the next token being Negative token
+                expected_token = torch.tensor([tokenizer_clf.encode("negative")[1]], device="cuda")
+                expected_token = expected_token.repeat(args.batch_size)
+                predicted_sentiment = model_clf(y_logits_.argmax(-1)).logits
+                predicted_sentiment = predicted_sentiment.view(-1, predicted_sentiment.shape[-1])/0.3
+                predicted_sentiment = torch.nn.functional.softmax(predicted_sentiment, dim=-1)
+                c_loss = torch.nn.CrossEntropyLoss(reduction='none')(
+                    predicted_sentiment,
+                    expected_token)
+                c_loss = c_loss.mean(-1) + args.sentiment_c2_weight * c_loss_2
 
         loss = (1.0 - args.constraint_weight) * args.lr_nll_portion * lr_nll_loss \
                + (1.0 - args.constraint_weight) * (1 - args.lr_nll_portion) * rl_nll_loss \
-               + args.constraint_weight * c_loss
+               + args.constraint_weight * c_loss      
         loss = loss.mean()
 
         if iter < args.num_iters - 1:  # so that the mask_t at the last iteration will not change
@@ -397,18 +497,13 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
     if args.wandb:
         wandb.finish()
 
-    # text, last_text_ids = direct_decode(y_logits, tokenizer, args.batch_size)
 
-    text, last_text_ids = beam_search_varient(
-        model, y_logits_, args.beam_search, soft_forward_x, x_model_past, tokenizer, args.batch_size, args.topk_v2, extra_mask=z_mask
-    )
-
-    # if(args.beam_search > 0):
-    #     text, last_text_ids = beam_search_decode(
-    #         model, y_logits_, args.beam_search, soft_forward_x, x_model_past, tokenizer, args.batch_size,extra_mask=z_mask)
-    # else:
-    #     text, _, last_text_ids = decode_with_model_topk(
-    #     model, y_logits_, args.topk, soft_forward_x, x_model_past, tokenizer, extra_mask=z_mask)
+    if(args.beam_search > 0):
+        text, last_text_ids = beam_search_decode(
+            model, y_logits_, args.beam_search, soft_forward_x, x_model_past, tokenizer, args.batch_size,extra_mask=z_mask)
+    else:
+        text, _, last_text_ids = decode_with_model_topk(
+        model, y_logits_, args.topk, soft_forward_x, x_model_past, tokenizer, extra_mask=z_mask)
 
     
     last_text_ids = last_text_ids.to(device)
@@ -425,6 +520,61 @@ def decode(model, tokenizer, device, x="", z="", constraints=None, args=None, mo
 
     return ppl_last, text, text_post
 
+# sentiment transfer without premise. Also assuming that the input is a single sentence
+def sentiment_transfer(model, tokenizer, device, args, model_back=None):
+    with open(args.input_file, 'r') as f:
+        lines = f.readlines()
+        data = [json.loads(l.strip()) for l in lines]
+
+    outfile = "topk" + str(args.topk) + "_len" + str(args.length) + "_cw" + str(args.constraint_weight) + "_lrnll" + str(args.lr_nll_portion) + "_c1" + str(args.sentiment_c1_weight) + "_c1rev" + str(args.sentiment_c1_rev_weight) + "_c2" + str(args.sentiment_c2_weight) + "_ngram" + str(args.sentiment_max_ngram) + ".json"
+
+    print("outputs: %s" % outfile)
+
+    # If want to re-infer with same weights then change mode from 'w' to 'a'
+    fw = open(os.path.join(args.output_dir, outfile), 'w')
+    fw_pretty = open(os.path.join(args.output_dir, 'pretty_' + outfile), 'w')
+
+    if "modelling-2" in args.mode:
+        tokenizer = AutoTokenizer.from_pretrained(args.sentiment_classifier)
+        model_clf = GPT2LMHeadModel.from_pretrained(args.sentiment_classifier)
+        model.resize_token_embeddings(len(tokenizer))
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model_clf.to(device, dtype=torch.float32)
+    else:
+        model_clf = None
+
+    for i, d in enumerate(data):
+        if i < args.start or i > args.end:
+            continue
+        x = "<|endoftext|>"
+        z = ". " + d["positive_stmt"]
+
+        print("%d / %d" % (i, len(data)))
+        print('Output to: \t', outfile)
+
+        text_candidates = []
+        text_complete_candidates = []
+        for _ in range(args.repeat_batch):
+            torch.cuda.empty_cache()
+            ppl_last, text, text_post = decode(model, tokenizer, device, x, z, args=args, model_back=model_back, model_clf=model_clf)
+            text_candidates.extend(text)
+            text_complete_candidates.extend(text_post)
+
+        out = {
+            'x': x,
+            'z': z,
+            'generation': text_candidates,
+            'generation_complete': text_complete_candidates,
+        }
+        print(out)
+        print('Output to: \t', outfile)
+
+        fw.write(json.dumps(out) + '\n')
+        fw.flush()
+        fw_pretty.write(json.dumps(out, indent=4) + '\n')
+        fw_pretty.flush()
+
+    print("outputs: %s" % outfile)
 
 def counterfactual_reasoning(model, tokenizer, device, args, model_back=None):
     fr = open(args.input_file, 'r')
@@ -474,9 +624,11 @@ def counterfactual_reasoning(model, tokenizer, device, args, model_back=None):
         counterfactual = d.get('counterfactual', "")
 
         x = premise + ' ' + counterfactual
+        x_counter = premise + ' ' + d.get('initial', "")
         ori_ending = d.get('original_ending', "")
         ori_endings = tokenize.sent_tokenize(ori_ending)
 
+        # dont remove processed
         if x in procssed:
             continue
         else:
@@ -484,6 +636,9 @@ def counterfactual_reasoning(model, tokenizer, device, args, model_back=None):
 
         x_text_so_far = [""]
         x_addon = [[x]]
+
+        x_counter_text_so_far = [""]
+        x_counter_addon = [[x_counter]]
 
         outputs = []
         for oi, z_sent in enumerate(ori_endings):
@@ -503,7 +658,7 @@ def counterfactual_reasoning(model, tokenizer, device, args, model_back=None):
                     text_ij = text_ij.strip()
 
                     ppl_last, text, text_post = decode(
-                        model, tokenizer, device, text_ij, z_text_so_far, None, args, model_back=model_back)
+                        model, tokenizer, device, text_ij, z_text_so_far, None, args, model_back=model_back, x_counter=x_counter)
 
                     outputs.append([text_ij, text_post])
 
@@ -704,13 +859,15 @@ def abductive_reasoning(model, tokenizer, device, args, model_back=None):
 
     print("outputs: %s" % outfile)
 
-def sentiment_transfer(model, tokenizer, device, args, model_back=None):
+
+def lexical_generation(model, tokenizer, device, args, model_back=None):
     with open(args.input_file, 'r') as f:
         lines = f.readlines()
         data = [json.loads(l.strip()) for l in lines]
 
-    outfile = '%s_seed%d_%d_%d_%s_cw%.3f_c2w%.3f_lrnllp%.3f_len%d_topk%d_niter%d_frozlen%d' \
+    outfile = '%if_zx%s_seed%d_%d_%d_%s_cw%.3f_c2w%.3f_lrnllp%.3f_len%d_topk%d_niter%d_frozlen%d' \
               '_winiter%d_noiseiter%d_gsstd%.4f_lr%.3f_lrratio%.2f_lriter%d_%s_%s_output.json' % (
+                  args.if_zx,
                   args.version,
                   args.seed,
                   args.start,
@@ -733,72 +890,12 @@ def sentiment_transfer(model, tokenizer, device, args, model_back=None):
                   args.large_gs_std)
     print("outputs: %s" % outfile)
 
-    fw = open(os.path.join(args.output_dir, outfile), 'w')
-
-    for i, d in enumerate(data):
-        if i < args.start or i > args.end:
-            continue
-
-        x = d["original"].strip()
-        z = d["original"].strip()
-        # z_keywords = _get_keywords(z, d["obs1"].strip(), args)
-
-        print("%d / %d" % (i, len(data)))
-        print('Output to: \t', outfile)
-
-        z = ". " + z
-        # z_keywords = ". " + z
-
-        text_candidates = []
-        text_complete_candidates = []
-        for _ in range(args.repeat_batch):
-            ppl_last, text, text_post = decode(model, tokenizer, device, x, z, None, args,
-                                               model_back=model_back)
-            text_candidates.extend(text)
-            text_complete_candidates.extend(text_post)
-
-
-        out = {
-            'x': x,
-            'generation': text_candidates,
-            'generation_complete': text_complete_candidates,
-        }
-
-        fw.write(json.dumps(out) + '\n')
-        fw.flush()
-
-    print("outputs: %s" % outfile)
-
-
-def lexical_generation(model, tokenizer, device, args, model_back=None):
-    with open(args.input_file, 'r') as f:
-        lines = f.readlines()
-        data = [json.loads(l.strip()) for l in lines]
-
-    outfile = 'seed%d_%d_%d_%s_cw%.3f_c2w%.3f_lrnllp%.3f_len%d_topk%d_beamwidth%d_topkv2%d_output.json' % (
-
-                  args.seed,
-                  args.start,
-                  args.end,
-                  args.mode,
-                  args.constraint_weight,
-                  args.abductive_c2_weight,
-                  args.lr_nll_portion,
-                  args.length,
-                  args.topk,
-                  args.beam_search,
-                  args.topk_v2)
-    print("outputs: %s" % outfile)
-
+    # If want to re-infer with same weights then change mode from 'w' to 'a'
     fw = open(os.path.join(args.output_dir, outfile), 'w')
     fw_pretty = open(os.path.join(args.output_dir, 'pretty_' + outfile), 'w')
 
     for i, d in enumerate(data):
         if i < args.start or i > args.end:
-    
-
-    # If want to re-infer with same weights then change mode from 'w' to 'a'
-
             continue
         print(d["concept_set"])
         constraints = d["concept_set"].split("#")
@@ -842,7 +939,7 @@ def lexical_generation(model, tokenizer, device, args, model_back=None):
 
 def main():
     args = options()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     device = "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
 
     if args.seed != -1:
