@@ -32,6 +32,7 @@ In this study, we explore COLD decoding for various tasks like sentence generati
 This paper introduces deterministic constraint functions, referred to as energy functions, tailored to specific tasks. Sampling from language models to minimize these energy functions is achieved through Langevin Dynamics, employing gradient descent on the energy function. Notably, gradients of the energy function are computed concerning the soft language model (LM) outputs, despite tokens being discrete. This is accomplished by utilizing continuous model outputs for gradient computation, followed by top-K filtering-based discrete decoding to obtain word outputs. The central equation governing this process is as follows:
 
 $${\tilde{y}}^{n+1}={\hat{y}}^{n} - \eta\nabla_{\hat{y}}E(\hat{y}) + \epsilon^{n}$$
+
 The energy function used for lexical generation in COLD decoding is as follows -
 
 $$E(\tilde{y})=\lambda_{a}^{l r}f_{L M}^{\rightarrow}(\tilde{y};x_{l}^{'})+\lambda_{a}^{r l}f_{L M}^{\leftarrow}(\tilde{y})+\lambda_{b}f_{s i m}(\tilde{y};x_{r})$$
@@ -54,8 +55,9 @@ A significant challenge with COLD lies in designing deterministic constraint fun
 ## Code Survey
 
 We refer to the official code for COLD [1] and MuCOLA[2] papers and make necessary modifications there. The github links are as follows -
-1. COLD - https://github.com/qkaren/COLDdecoding 
-2. MuCOLA - https://github.com/Sachin19/mucoco/tree/sampling
+
+1. COLD - <https://github.com/qkaren/COLDdecoding>
+2. MuCOLA - <https://github.com/Sachin19/mucoco/tree/sampling>
 
 ## Datasets And Models
 
@@ -82,7 +84,7 @@ Utilizing the GPT2-XL model for text generation, our evaluation investigates the
 In our study, we introduce a novel custom generation task termed "sentiment transfer," featuring distinctive constraint function definitions. The primary objective of this task is to manipulate the sentiment of input sentences, transitioning them from a negative to a positive tone. To achieve this, we define the following constraint functions:
 
 $$E(\tilde{y})=\lambda_{a}^{lr}f_{LM}^{+}(\tilde{y})+\lambda_{a}^{l}f_{LM}^{+}(\tilde{y})+\lambda_{b}f_{sim}(\tilde{y};x)-\lambda_{c}f_{pred}(\tilde{y};x)-\lambda_{c}f_{pred}(x;\tilde{y})\tag{1}$$
-$$E(\tilde{y})=\lambda_{a}^{l r}f_{L M}^{+}(\tilde{y})+\lambda_{a}^{l}f_{L M}^{+}(\tilde{y})+\lambda_{b}f_{s i m}(\tilde{y};x)+\lambda_{c}P(n e x t=N e g a t i v e|\tilde{y})\left({2}\right)$$
+$$E(\tilde{y})=\lambda_{a}^{l r}f_{L M}^{+}(\tilde{y})+\lambda_{a}^{l}f_{L M}^{+}(\tilde{y})+\lambda_{b}f_{s i m}(\tilde{y};x)+\lambda_{c}P(next=Negative|\tilde{y})\left({2}\right)$$
 
 The modeling approach described by equation 1 demonstrates a tendency to converge towards irrelevant solutions, irrespective of the original input sentence. Notably, as the parameter λb increases, the generated output tends to mirror the original sentence, indicating a significant flaw in the modeling approach. This behavior underscores the inadequacy of the terms fpred(*x; ˜y*) and f*pred*(˜y; x) in capturing the negative sentiment intended for generation. Conversely, employing equation 2 for modeling encourages the generation of words associated with negation. However, despite this improvement, the equation still struggles to produce fluent output. This highlights the complexity involved in accurately capturing and manipulating sentiment within generated text.
 
@@ -199,6 +201,7 @@ in *Proceedings of the 28th international conference on machine learning (ICML-1
 Following are some of the samples generated for lexical generation, sentiment transfer and counterfactual generation.
 
 For the constrained lexical generation task, we notice an overall improvement in generation quality when employed beam search, instead of direct top-K choosing. The constraint words are look, field, stand
+
 - The first time I ever heard of the stand for the right to bear arms was in the late 1960s, when I was a student at the University of California, Berkeley.
 
 - The last stand of field marshal is over. The last of the defenders of the Empire is dead.
@@ -210,6 +213,7 @@ For the constrained lexical generation task, we notice an overall improvement in
 
 •
 Some good samples for the critical keyword constraint set automobiles-entitlement-occupation
+
 - The world occupation entitlement is a entitlement to a certain amount of land, and the world occupation entitlement is a right to occupy that land.
 
 - The U.S. Supreme Court automobiles entitlement program is a program that provides a tax credit to owners of certain model year 1997 and later model year 1997 and later vehicles.
@@ -217,19 +221,23 @@ Some good samples for the critical keyword constraint set automobiles-entitlemen
 - A new study published in automobiles entitlement to the American Journal of Public Health found that the average driver spends $,000 a year on gas, and that the average driver spends $1,000.
 
 Following are some of the good counterfactual generated endings when corresponding to the premise - "Ryan was called by his friend to skip work one day.", initial - "He missed his train to work and instead went to the park." counterfactual - "But Ryan had an important project at work and went in to finish it.", original-ending - "Ryan and his friend played with birds at the park all day. At the end of the day, they left the park and saw Ryan's boss. Ryan got fired."
+
 - When he came back, his friend was gone with birds and the car. He was like, 'What the hell is going on?'
 - When he came back, the friend was waiting and called it a day. He was a very nice man.
 
 Following are some of the failed counterfactual generated endings when corresponding to the premise-"Neil had been journeying through Asia." initial-"Now he had worked his way south into Australia." counterfactual-"But he contracted malaria on a Thai island, and had to be flown home for treatment." original-ending: "Neil was so excited to see Australian culture. He was thrilled at the prospect of exotic animals and people! His favorite moment was when he got to feed a baby koala bear.",
+
 - Neil was so excited to see his family see his culture, see who culture
 - I was so excited to see him culture. I was so excited to see him culture. I was so excited to see him culture.
 
 Following are the sentiment transfer completions generated by the modelling approach - 1 for the original-statement : "She admired the man for his honesty."
+
 - The first time I saw the movie, I was in the theater with my family.
 
 - The U.S. government has been trying to get the U.N. Security Council to pass a resolution that would impose sanctions on North Korea for its recent nuclear test.
 
 Following are the best sentiment transfer completions when used modelling approach - 2 for the original-statement : "She admired the man for his honesty."
+
 - She did not admired the man and was in the theater to see him. - I was so admired the man for no honesty and her.
 
 - The US admired the man for his honesty and not the she is not.
