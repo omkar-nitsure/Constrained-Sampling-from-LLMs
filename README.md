@@ -83,8 +83,9 @@ Utilizing the GPT2-XL model for text generation, our evaluation investigates the
 
 In our study, we introduce a novel custom generation task termed "sentiment transfer," featuring distinctive constraint function definitions. The primary objective of this task is to manipulate the sentiment of input sentences, transitioning them from a negative to a positive tone. To achieve this, we define the following constraint functions:
 
-$$E(\tilde{y})=\lambda_{a}^{lr}f_{LM}^{+}(\tilde{y})+\lambda_{a}^{l}f_{LM}^{+}(\tilde{y})+\lambda_{b}f_{sim}(\tilde{y};x)-\lambda_{c}f_{pred}(\tilde{y};x)-\lambda_{c}f_{pred}(x;\tilde{y})\tag{1}$$
-$$E(\tilde{y})=\lambda_{a}^{l r}f_{L M}^{+}(\tilde{y})+\lambda_{a}^{l}f_{L M}^{+}(\tilde{y})+\lambda_{b}f_{s i m}(\tilde{y};x)+\lambda_{c}P(next=Negative|\tilde{y})\left({2}\right)$$
+$$E(\tilde{y})=\lambda_{a}^{lr}f_{LM}^{+}(\tilde{y})+\lambda_{a}^{l}f_{LM}^{+}(\tilde{y})+\lambda_{b}f_{sim}(\tilde{y};x)-\lambda_{c}f_{pred}(\tilde{y};x)-\lambda_{c}f_{pred}(x;\tilde{y})$$
+
+$$E(\tilde{y})=\lambda_{a}^{lr}f_{LM}^{+}(\tilde{y})+\lambda_{a}^{l}f_{LM}^{+}(\tilde{y})+\lambda_{b}f_{sim}(\tilde{y};x)+\lambda_{c}P(next=Negative|\tilde{y})$$
 
 The modeling approach described by equation 1 demonstrates a tendency to converge towards irrelevant solutions, irrespective of the original input sentence. Notably, as the parameter λb increases, the generated output tends to mirror the original sentence, indicating a significant flaw in the modeling approach. This behavior underscores the inadequacy of the terms fpred(*x; ˜y*) and f*pred*(˜y; x) in capturing the negative sentiment intended for generation. Conversely, employing equation 2 for modeling encourages the generation of words associated with negation. However, despite this improvement, the equation still struggles to produce fluent output. This highlights the complexity involved in accurately capturing and manipulating sentiment within generated text.
 
